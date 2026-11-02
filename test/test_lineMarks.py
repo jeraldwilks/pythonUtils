@@ -82,6 +82,18 @@ class TestParse(unittest.TestCase):
         self.assertIsNotNone(lm.checkMarks(bad))
     self.assertIsNone(lm.checkMarks("o>"))
 
+  def test_diamondsAndCrowsFeet(self):
+    'Diamonds (hollow and filled) and crows\' feet: by name, and the feet by "}" / "{".'
+    self.assertEqual(parseMarks("diamond"), (Mark("diamond", (12.0, 7.0), OUTWARD),))
+    self.assertEqual(parseMarks("diamond(10)"), (Mark("diamond", (10.0, 6.0), OUTWARD),))
+    self.assertEqual(parseMarks("fdiamond(12,8)"), (Mark("fdiamond", (12.0, 8.0), OUTWARD),))
+    self.assertEqual([(m.kind, m.direction) for m in parseMarks("}")], [("crow", FORWARD)])
+    self.assertEqual([(m.kind, m.direction) for m in parseMarks("{")], [("crow", BACKWARD)])
+    self.assertEqual(parseMarks("crow"), (Mark("crow", (10.0, 10.0), OUTWARD),))
+    self.assertEqual([m.kind for m in parseMarks("@}")], ["ring", "crow"])             # (ER: zero or many)
+    self.assertEqual([m.kind for m in parseMarks("|}")], ["bar", "crow"])              # (one or many)
+    self.assertEqual([(m.kind, m.direction) for m in parseMarks("diamond>")], [("diamond", OUTWARD), ("arrow", FORWARD)])
+
   def test_register(self):
     'A new kind of mark: written by its name and its shorthand.'
     class Square(lm.CircleKind):
@@ -132,6 +144,34 @@ class TestLayout(unittest.TestCase):
     r, a = lay.marks
     self.assertEqual((r.x0, r.x1), (-15.0, -10.0))
     self.assertEqual(lay.lowStop, -15.0)
+
+  def test_diamondAtEnd(self):
+    'A diamond at the end: its tip on the end, the line stopping at its other tip.'
+    for spec in ("diamond", "fdiamond"):
+      with self.subTest(spec=spec):
+        lay = layoutMarks(spec, END)
+        p, = lay.marks
+        self.assertEqual((p.x0, p.x1), (-12.0, 0.0))
+        self.assertEqual(lay.lowStop, -12.0)
+        self.assertEqual(lay.breadth, 7.0)
+        self.assertEqual(lay.joiners, [])
+    p, = layoutMarks("diamond", START).marks
+    self.assertEqual((p.x0, p.x1), (0.0, 12.0))
+
+  def test_crowsFoot(self):
+    'A crow\'s foot is on the end, the line running through it (it is the middle toe); behind a ring, the line runs on from the ring to the end.'
+    lay = layoutMarks("}", END)
+    p, = lay.marks
+    self.assertEqual((p.x0, p.x1, p.forward), (-10.0, 0.0, True))
+    self.assertIsNone(lay.lowStop)
+    self.assertEqual(lay.joiners, [])
+    p, = layoutMarks("crow", START).marks
+    self.assertEqual((p.x0, p.x1, p.forward), (0.0, 10.0, False))          # (toes toward the start)
+    lay = layoutMarks("@}", END)
+    ring, foot = lay.marks
+    self.assertEqual((ring.x0, ring.x1, foot.x0, foot.x1), (-15.0, -10.0, -10.0, 0.0))
+    self.assertEqual(lay.lowStop, -15.0)
+    self.assertEqual(lay.joiners, [(-10.0, 0.0)])
 
   def test_circleThenArrow(self):
     '"o>" at the end: ----o> -- the circle behind the arrowhead, touching it.'
@@ -291,6 +331,26 @@ class TestDraw(unittest.TestCase):
     for i in ids.start + ids.end:
       if c.type(i) == "oval":
         self.assertEqual((c.itemcget(i, "fill"), c.itemcget(i, "outline")), ("pink", "red"))
+    c.configure(background="white")
+
+  def test_diamondsAndCrowsFeetDrawn(self):
+    'A hollow diamond is filled with the background, a filled one with the line colour; a crow\'s foot is one 3-point line, toes at the end.'
+    c = self.canvas
+    c.configure(background="#eeeeee")
+    ids = lm.drawMarkedPath(c, [(0.0, 50.0), (100.0, 50.0)], "diamond", "fdiamond", lineColor="red")
+    self.assertEqual(c.coords(ids.line), [12.0, 50.0, 88.0, 50.0])
+    hollow, = ids.start
+    filled, = ids.end
+    self.assertEqual((c.type(hollow), c.itemcget(hollow, "fill"), c.itemcget(hollow, "outline")), ("polygon", "#eeeeee", "red"))
+    self.assertEqual((c.type(filled), c.itemcget(filled, "fill"), c.itemcget(filled, "outline")), ("polygon", "red", "red"))
+    self.assertEqual(c.coords(hollow), [0.0, 50.0, 6.0, 46.5, 12.0, 50.0, 6.0, 53.5])   # (tip on the start)
+    self.assertEqual(c.coords(filled)[4:6], [100.0, 50.0])                               # (tip on the end)
+    ids = lm.drawMarkedPath(c, [(0.0, 50.0), (100.0, 50.0)], None, "@}", lineColor="blue")
+    joiner, ring, foot = ids.end
+    self.assertEqual((c.type(joiner), c.type(ring), c.type(foot)), ("line", "oval", "line"))
+    self.assertEqual(c.coords(joiner), [90.0, 50.0, 100.0, 50.0])                        # (from the ring to the end, under the foot)
+    self.assertEqual(c.coords(foot), [100.0, 45.0, 90.0, 50.0, 100.0, 55.0])             # (toes at the end, heel 10 back)
+    self.assertEqual(c.itemcget(foot, "fill"), "blue")
     c.configure(background="white")
 
   def test_nothingLeft(self):

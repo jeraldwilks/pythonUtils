@@ -15,14 +15,21 @@ toward its end (so, with the line running left to right, as it looks):
 ``@``, ``ring``     a hollow circle: outlined in the line's colour, filled
                     with the canvas's background (see *HOLLOW*)
 ``|``, ``bar``      a bar across the line (the line runs through it)
+``diamond``         a hollow diamond, its tip on the line's end (UML's
+                    aggregation); ``fdiamond``, a filled one (composition)
+``}``, ``{``        a crow's foot, its toes spread toward the line's end,
+``crow``            or its start (ER's "many"); ``crow``: toward the end it's
+                    at, like ``arrow``
 ==================  ========================================================
 
 Any mark may be followed by its sizes in parentheses: ``arrow(8,10,3)`` (as
 Tk's "arrowshape": tip to neck, tip to trailing points, and how far the
 trailing points stand out from the line's edge), ``circle(6)``, ``dot(6)`` and
-``ring(6)`` (the diameter), ``bar(12)`` (its length across the line); ``>(8,10,3)`` too.
+``ring(6)`` (the diameter), ``bar(12)`` (its length across the line),
+``diamond(12,7)`` (along the line, and across it), ``crow(10,10)`` (likewise);
+``>(8,10,3)`` too.
 Marks may be separated by spaces or commas, or run together: ``o>``, ``>>``,
-``|||``, ``<|>``, ``circle(6) arrow(8,10,3)``.
+``|||``, ``<|>``, ``@}`` (ER's "zero or many"), ``circle(6) arrow(8,10,3)``.
 
 A sequence goes at a line's start (*START*: ``<o`` gives ``<o----``), at its end
 (*END*: ``o>`` gives ``----o>``), or in its middle (*MIDDLE*: ``|||`` gives
@@ -277,6 +284,64 @@ class RingKind(CircleKind):
   role = HOLLOW
 
 
+class DiamondKind(MarkKind):
+  '''
+  A hollow diamond (``diamond``) -- UML's aggregation -- its tip on the end of
+  the line it's at: sizes (along the line, across it); one size *a* is (a, 0.6a).
+  '''
+  name = "diamond"
+  defaultSizes = (12.0, 7.0)
+  role = HOLLOW
+
+  def normalize(self, sizes):
+    if len(sizes) == 1:
+      return (sizes[0], sizes[0] * 0.6)
+    return super().normalize(sizes)
+
+  def length(self, sizes, width):
+    return sizes[0]
+
+  def breadth(self, sizes, width):
+    return sizes[1]
+
+  def draw(self, pen, x0, x1, sizes, width, forward):
+    xm, h = (x0 + x1) / 2, sizes[1] / 2
+    pen.polygon([pen.pt(x0), pen.pt(xm, -h), pen.pt(x1), pen.pt(xm, h)], self.role)
+
+
+class FilledDiamondKind(DiamondKind):
+  '''
+  A filled diamond (``fdiamond``), in the line's colour -- UML's composition.
+  '''
+  name = "fdiamond"
+  role = DOT
+
+
+class CrowFootKind(MarkKind):
+  '''
+  A crow's foot (``crow``, ``}``, ``{``) -- ER's "many": three toes fanning
+  out from a point on the line to the end it's at (``}``: toward the line's
+  end; ``{``: toward its start; ``crow``: outward, like ``arrow``). Sizes:
+  (along the line, across it at the toes). The line runs through it (it is
+  the middle toe).
+  '''
+  name = "crow"
+  shorthands = {"}": FORWARD, "{": BACKWARD}
+  defaultSizes = (10.0, 10.0)
+  solid = False
+
+  def length(self, sizes, width):
+    return sizes[0]
+
+  def breadth(self, sizes, width):
+    return sizes[1]
+
+  def draw(self, pen, x0, x1, sizes, width, forward):
+    heel, toes = (x0, x1) if forward else (x1, x0)
+    h = sizes[1] / 2
+    pen.line([pen.pt(toes, -h), pen.pt(heel), pen.pt(toes, h)], STROKE, dash="")
+
+
 class BarKind(MarkKind):
   '''
   A bar across the line (``bar``, ``|``): its size is its length. The line runs through it.
@@ -322,7 +387,7 @@ def registerMarkKind(kind:MarkKind) -> MarkKind:
     parseMarks.cache_clear()
   return kind
 
-for _k in (ArrowKind(), CircleKind(), DotKind(), RingKind(), BarKind()):
+for _k in (ArrowKind(), CircleKind(), DotKind(), RingKind(), DiamondKind(), FilledDiamondKind(), CrowFootKind(), BarKind()):
   registerMarkKind(_k)
 
 
