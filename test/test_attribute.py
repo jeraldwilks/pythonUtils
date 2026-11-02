@@ -324,6 +324,48 @@ class Test(unittest.TestCase):
       fred["height"] = "tall"                                    # (changing the value-only attribute)
     self.assertEqual(fred["height"], 2.0)
 
+  def test15InheritorsTold(self):
+    'Those below an object that inherit an attribute from it are told when it changes (one with its own value, and those below it, are not); and when its supertypes change.'
+    from util.observer import Observer
+    class Kin(TestAttrs): # (knows what's below it)
+      def __init__(self, name, individual=False, parents=[]):
+        self.kids:list = []
+        super().__init__(name, individual, list(parents))
+        for p in parents:
+          p.kids.append(self)
+      @override
+      def getSubs(self):
+        return list(self.kids)
+    class Watcher(Observer):
+      def __init__(self):
+        self.heard:list = []
+      def update(self, subject, *topics):
+        self.heard += [(subject["name"], t) for t in topics]
+    thing = Kin("thing")
+    animal = Kin("animal", parents=[thing])
+    pet = Kin("pet", parents=[thing])
+    dog = Kin("dog", parents=[animal, pet])                      # (the hierarchy joins up again)
+    rex = Kin("rex", True, [dog])
+    tom = Kin("tom", True, [animal])
+    w = Watcher()
+    for o in (thing, animal, pet, dog, rex, tom):
+      o.attach(w)
+    thing.setAttr("color", Attribute("grey", str, VAR))
+    inherited = lambda: sorted(n for n, t in w.heard if t[0] == "mod inherited attribute")
+    self.assertEqual(inherited(), ["animal", "dog", "pet", "rex", "tom"]) # (each once)
+    self.assertTrue(all(t[1] == ("color",) for n, t in w.heard if t[0] == "mod inherited attribute"))
+    animal["color"] = "brown"                                    # (its own value now)
+    w.heard.clear()
+    thing["color"] = "black"
+    self.assertEqual(inherited(), ["dog", "pet", "rex"])         # (not animal, or tom below it; dog through pet)
+    w.heard.clear()
+    del animal["color"]
+    self.assertEqual(inherited(), ["dog", "rex", "tom"])
+    self.assertEqual(TestAttrs("loner").getSubs(), [])           # (by default: none)
+    w.heard.clear()
+    animal.notifySupersChanged()                                 # (eg: given another supertype)
+    self.assertEqual(sorted(n for n, t in w.heard if t == ("mod supers", ())), ["animal", "dog", "rex", "tom"])
+
 
 if __name__ == "__main__":
   #import sys;sys.argv = ['', 'Test.testName']

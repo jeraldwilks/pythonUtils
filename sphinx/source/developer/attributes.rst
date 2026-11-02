@@ -37,7 +37,14 @@ attributes (and preferences: see :doc:`utilities`) as it first uses them.
 
 An *AttributedObject* is a :py:class:`~util.observer.Subject`: it announces
 ``"new attribute"``, ``"mod attribute"`` and ``"del attribute"``, so that,
-eg: the drawing of an object can follow its attributes. It's
+eg: the drawing of an object can follow its attributes. If the subclass also
+overrides :py:meth:`~util.attribute.AttributedObject.getSubs` (the objects
+directly below it), the objects that inherit a changed attribute announce
+``"mod inherited attribute"`` too (all the way down, stopping at any that
+have a value of their own); and when the subclass changes an object's
+supertypes, it calls
+:py:meth:`~util.attribute.AttributedObject.notifySupersChanged`, so that the
+object and everything below it announce ``"mod supers"``. It's
 :py:class:`~util.persistence.serialize.Serializable` and
 :py:class:`~util.dirtyable.Dirtyable` too.
 

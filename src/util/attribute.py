@@ -629,6 +629,13 @@ class AttributedObject(Serializable, Dirtyable, strdict, Subject):
   *Restriction* objects allow. *get()* finds a key's effective value -- the
   object's own, or else the one it inherits; *getLocal()* and *getInh()* find
   only one or the other.
+
+  Its observers are told of its own attributes' changes ("new attribute",
+  "mod attribute", "del attribute"); if a subclass says what is below it
+  (*getSubs()*), the observers of those that inherit the attribute are told
+  too, with "mod inherited attribute" (see *_notifyAttributeInheritors()*).
+  A subclass that changes its supertypes calls *notifySupersChanged()*, to
+  tell its observers, and those below it, with "mod supers".
   '''
   @override
   @classmethod
@@ -932,6 +939,8 @@ class AttributedObject(Serializable, Dirtyable, strdict, Subject):
       current.value = value
       verb = 'mod'
     self.notify((f"{verb} attribute", (key, value)))
+    if current is not None: # (otherwise setAttr() told them)
+      self._notifyAttributeInheritors(key)
       
   @override
   def __delitem__(self, key:str)->None:
@@ -942,6 +951,7 @@ class AttributedObject(Serializable, Dirtyable, strdict, Subject):
     super().__delitem__(key)
     self.setDirty()
     self.notify(("del attribute", (key,)))
+    self._notifyAttributeInheritors(key)
 
   def __iter__(self):
     '''
@@ -1044,6 +1054,7 @@ class AttributedObject(Serializable, Dirtyable, strdict, Subject):
     super().__setitem__(key, attr)
     self.setDirty()
     self.notify(("new attribute", (key, attr.value)))
+    self._notifyAttributeInheritors(key)
     return attr
     
   @abstractmethod
@@ -1073,6 +1084,58 @@ class AttributedObject(Serializable, Dirtyable, strdict, Subject):
     :rtype: bool
     '''
     return not self.isIndividual()
+
+  def getSubs(self) -> list[AttributedObject]:
+    '''
+    :returns: The objects directly below this one -- the subtypes and
+      individuals whose *getSupers()* start with it -- which may inherit its
+      attributes. By default, none: a subclass that can find them overrides
+      this, so that they are told when what they inherit changes (see
+      *_notifyAttributeInheritors()*).
+    :rtype: list[AttributedObject]
+    '''
+    return []
+
+  def _notifyAttributeInheritors(self, key:str) -> None:
+    '''
+    :param key: The attribute that changed (or was added, or removed) here.
+    :type key: str
+
+    Tell the observers of each object below this one (see *getSubs()*) that
+    may inherit *key* from it -- one with no local *key* of its own -- that
+    it changed, with a ("mod inherited attribute", (key,)) topic; and so on
+    down. One with its own *key* stops the chain: its value hides this one's
+    from it and from those below it. (Each is told once, even where the
+    hierarchy joins up again or goes round in a cycle.)
+    '''
+    seen:set[int] = {id(self)}
+    todo:list[AttributedObject] = list(self.getSubs())
+    while todo:
+      sub = todo.pop()
+      if id(sub) in seen or dict.__contains__(sub, key):
+        continue
+      seen.add(id(sub))
+      sub.notify(("mod inherited attribute", (key,)))
+      todo.extend(sub.getSubs())
+
+  def notifySupersChanged(self) -> None:
+    '''
+    Tell the observers of this object, and of each object below it (see
+    *getSubs()*), with a ("mod supers", ()) topic, that its supertypes
+    changed (eg: one added, or taken away), so what they inherit may have
+    too. For a subclass that keeps its supertypes to call when it changes
+    them: *AttributedObject* doesn't change them itself. (Each is told once,
+    even where the hierarchy joins up again or goes round in a cycle.)
+    '''
+    seen:set[int] = set()
+    todo:list[AttributedObject] = [self]
+    while todo:
+      o = todo.pop()
+      if id(o) in seen:
+        continue
+      seen.add(id(o))
+      o.notify(("mod supers", ()))
+      todo.extend(o.getSubs())
   
   def isValueEditable(self, key:str) -> bool:
     '''
