@@ -31,6 +31,7 @@ Submodules
    util.dirtyable
    util.errorReportingObject
    util.folderServer
+   util.lineMarks
    util.observer
    util.platformSupport
    util.prefs
