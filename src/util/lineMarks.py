@@ -602,18 +602,21 @@ class _Pen:
   def _item(self, typ:str, points:Sequence[Point], role:str, opts:dict[str, Any]) -> int:
     coords = self.toWindow([c for p in points for c in p])
     tags = self.tags + [role]
+    canvas = self.canvas
     while self.existing:
       i = self.existing.pop(0)
-      try:
-        if self.canvas.type(i) == typ:
-          self.canvas.coords(i, coords)
-          self.canvas.itemconfigure(i, tags=tags, **opts)
+      if itemType(canvas, i) == typ:
+        try:
+          canvas.coords(i, coords)
+          canvas.itemconfigure(i, tags=tags, **opts)
           self.ids.append(i)
           return i
-      except Exception: # (gone)
-        continue
-      self.canvas.delete(i)
-    i = getattr(self.canvas, "create_" + typ)(coords, tags=tags, **opts)
+        except Exception: # (gone)
+          forgetItem(canvas, i)
+          continue
+      deleteItem(canvas, i)
+    i = getattr(canvas, "create_" + typ)(coords, tags=tags, **opts)
+    _rememberedTypes(canvas)[i] = typ
     self.ids.append(i)
     return i
 
@@ -648,12 +651,62 @@ class _Pen:
     :returns: The items it drew, in order.
     '''
     for i in self.existing:
-      try:
-        self.canvas.delete(i)
-      except Exception:
-        pass
+      deleteItem(self.canvas, i)
     self.existing = []
     return self.ids
+
+
+# Canvas items' types, remembered: a redraw in place reuses an item only if it's
+# of the right type, and asking the canvas (canvas.type()) is a round-trip to
+# Tk for every mark, every frame. Tk never reuses an item's id, so a remembered
+# type is right for as long as the item exists; one that's gone is forgotten
+# when that's found out (see _Pen._item()), or when it's deleted here.
+
+_TYPES_ATTR = "_lineMarksItemTypes"
+
+def _rememberedTypes(canvas) -> dict[int, str]:
+  '''
+  :returns: The types of *canvas*'s items made (or asked about) here, by id.
+  '''
+  types = canvas.__dict__.get(_TYPES_ATTR)
+  if types is None:
+    types = {}
+    setattr(canvas, _TYPES_ATTR, types)
+  elif len(types) > 200_000: # (items deleted behind our back aren't forgotten: start over, rather than grow for ever)
+    types.clear()
+  return types
+
+def itemType(canvas, i:int) -> Optional[str]:
+  '''
+  :returns: Canvas item *i*'s type (eg: "line"), as remembered, or as the
+    canvas says if it isn't; None if there's no such item.
+  '''
+  types = _rememberedTypes(canvas)
+  typ = types.get(i)
+  if typ is None:
+    try:
+      typ = canvas.type(i) or None
+    except Exception:
+      typ = None
+    if typ is not None:
+      types[i] = typ
+  return typ
+
+def forgetItem(canvas, i:int) -> None:
+  '''
+  Forget item *i*'s type (it's gone).
+  '''
+  _rememberedTypes(canvas).pop(i, None)
+
+def deleteItem(canvas, i:int) -> None:
+  '''
+  Delete canvas item *i* (if it's still there), and forget it.
+  '''
+  forgetItem(canvas, i)
+  try:
+    canvas.delete(i)
+  except Exception:
+    pass
 
 def backgroundColor(canvas) -> str:
   '''
@@ -778,8 +831,28 @@ def paramAtDistance(path:Sequence[Point], d:float, fromEnd:bool=False) -> Option
     if total < d:
       return None
     return 1.0 - d / total if fromEnd else d / total
-  # (a quadratic: the first point that far out, by stepping, then bisecting)
-  near, steps = 1.0 - far, 32
+  # A quadratic. The distances asked for are small next to the path (a few
+  # marks' worth), where dist() grows with t and is nearly linear: guess from
+  # the speed at the near end, then correct by secant steps -- a handful of
+  # evaluations, not the 60-odd a scan-and-bisect takes.
+  near = 1.0 - far
+  speed = 2 * math.hypot(path[1][0] - ref[0], path[1][1] - ref[1]) # (|B'| at the near end)
+  if speed > 0:
+    a, fa = near, -d
+    b = near + (far - near) * min(1.0, d / speed)
+    fb = dist(b) - d
+    for _ in range(12):
+      if abs(fb) <= 1e-4:
+        return b
+      if fb == fa:
+        break
+      c = b - fb * (b - a) / (fb - fa)
+      if not (min(near, far) <= c <= max(near, far)) or c == b:
+        break
+      a, fa, b, fb = b, fb, c, dist(c) - d
+  # (not found that way -- eg: the curve bends back toward the end, or all of
+  # it is closer than d: the first point that far out, by stepping, then bisecting)
+  steps = 32
   prev = near
   for k in range(1, steps + 1):
     t = near + (far - near) * k / steps
@@ -833,7 +906,7 @@ class MarkedPathIDs:
     Delete all its items.
     '''
     for i in self.all():
-      canvas.delete(i)
+      deleteItem(canvas, i)
     self.line, self.start, self.end = None, [], []
 
 def drawMarkedPath(canvas, path:Sequence[Point], startMarks:Sequence[Mark]|str|None=None,
@@ -866,16 +939,21 @@ def drawMarkedPath(canvas, path:Sequence[Point], startMarks:Sequence[Mark]|str|N
     coords = toWindow([c for p in pts for c in p])
     opts:dict[str, Any] = dict(fill=lineColor, width=sw, arrow="none", smooth=len(pts) == 3)
     opts.update(lineOptions or {})
-    if ids.line is not None and _isType(canvas, ids.line, "line"):
-      canvas.coords(ids.line, coords)
-      canvas.itemconfigure(ids.line, tags=list(tags), **opts)
-      ret.line = ids.line
-    else:
+    ret.line = None
+    if ids.line is not None and itemType(canvas, ids.line) == "line":
+      try:
+        canvas.coords(ids.line, coords)
+        canvas.itemconfigure(ids.line, tags=list(tags), **opts)
+        ret.line = ids.line
+      except Exception: # (gone)
+        forgetItem(canvas, ids.line)
+    if ret.line is None:
       if ids.line is not None:
-        canvas.delete(ids.line)
+        deleteItem(canvas, ids.line)
       ret.line = canvas.create_line(coords, tags=list(tags), **opts)
+      _rememberedTypes(canvas)[ret.line] = "line"
   elif ids.line is not None:
-    canvas.delete(ids.line)
+    deleteItem(canvas, ids.line)
   common:dict[str, Any] = dict(width=width, strokeWidth=sw, lineColor=lineColor, fillColor=fillColor,
                                backColor=backColor, tags=tags, toWindow=toWindow, lineOptions=lineOptions)
   ret.start = drawMarks(canvas, startLayout, path[0], pathDirection(path, False, startLayout.high),
@@ -884,8 +962,3 @@ def drawMarkedPath(canvas, path:Sequence[Point], startMarks:Sequence[Mark]|str|N
                       existing=ids.end, **common)
   return ret
 
-def _isType(canvas, i:int, typ:str) -> bool:
-  try:
-    return canvas.type(i) == typ
-  except Exception:
-    return False
