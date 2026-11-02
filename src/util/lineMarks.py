@@ -12,13 +12,15 @@ toward its end (so, with the line running left to right, as it looks):
                     line it's at (toward the end, in the middle of a line)
 ``o``, ``circle``   a circle, filled with the fill colour
 ``*``, ``dot``      a solid circle, in the line's colour
+``@``, ``ring``     a hollow circle: outlined in the line's colour, filled
+                    with the canvas's background (see *HOLLOW*)
 ``|``, ``bar``      a bar across the line (the line runs through it)
 ==================  ========================================================
 
 Any mark may be followed by its sizes in parentheses: ``arrow(8,10,3)`` (as
 Tk's "arrowshape": tip to neck, tip to trailing points, and how far the
-trailing points stand out from the line's edge), ``circle(6)`` and ``dot(6)``
-(the diameter), ``bar(12)`` (its length across the line); ``>(8,10,3)`` too.
+trailing points stand out from the line's edge), ``circle(6)``, ``dot(6)`` and
+``ring(6)`` (the diameter), ``bar(12)`` (its length across the line); ``>(8,10,3)`` too.
 Marks may be separated by spaces or commas, or run together: ``o>``, ``>>``,
 ``|||``, ``<|>``, ``circle(6) arrow(8,10,3)``.
 
@@ -86,7 +88,10 @@ DOT = "lm:dot"
 "A drawn item's role: filled and outlined with the line colour."
 OPEN = "lm:open"
 "A drawn item's role: outlined with the line colour, filled with the fill colour."
-ROLES = (STROKE, SOLID, DOT, OPEN)
+HOLLOW = "lm:hollow"
+"""A drawn item's role: outlined with the line colour, filled with the background colour (the canvas's,
+unless *drawMarks()* is told another) -- so it looks empty, and hides the line under it."""
+ROLES = (STROKE, SOLID, DOT, OPEN, HOLLOW)
 
 
 class MarkSpecError(ValueError):
@@ -261,6 +266,17 @@ class DotKind(CircleKind):
   role = DOT
 
 
+class RingKind(CircleKind):
+  '''
+  A hollow circle (``ring``, ``@``): outlined in the line's colour, filled with the
+  background colour (see *HOLLOW*), so it reads as empty whatever the fill colour
+  is. Its size is its diameter.
+  '''
+  name = "ring"
+  shorthands = {"@": OUTWARD}
+  role = HOLLOW
+
+
 class BarKind(MarkKind):
   '''
   A bar across the line (``bar``, ``|``): its size is its length. The line runs through it.
@@ -306,7 +322,7 @@ def registerMarkKind(kind:MarkKind) -> MarkKind:
     parseMarks.cache_clear()
   return kind
 
-for _k in (ArrowKind(), CircleKind(), DotKind(), BarKind()):
+for _k in (ArrowKind(), CircleKind(), DotKind(), RingKind(), BarKind()):
   registerMarkKind(_k)
 
 
@@ -488,7 +504,8 @@ class _Pen:
   type (see *finish()*).
   '''
   def __init__(self, canvas, origin:Point, direction:Point, existing:Sequence[int], tags:Sequence[str],
-               toWindow:Callable[[list[float]], list[float]], lineColor:str, fillColor:str, strokeWidth:float):
+               toWindow:Callable[[list[float]], list[float]], lineColor:str, fillColor:str, strokeWidth:float,
+               backColor:Optional[str]=None):
     n = math.hypot(direction[0], direction[1]) or 1.0
     self.ux, self.uy = direction[0] / n, direction[1] / n
     self.ox, self.oy = origin
@@ -497,8 +514,19 @@ class _Pen:
     self.tags = list(tags)
     self.toWindow = toWindow
     self.lineColor, self.fillColor = lineColor, fillColor
+    self._backColor = backColor
     self.strokeWidth = strokeWidth
     self.ids:list[int] = []
+
+  @property
+  def backColor(self) -> str:
+    '''
+    What *HOLLOW* items are filled with: the canvas's background, unless told
+    another -- asked for only when one is drawn (a round-trip to Tk).
+    '''
+    if self._backColor is None:
+      self._backColor = backgroundColor(self.canvas)
+    return self._backColor
 
   def pt(self, x:float, y:float=0.0) -> Point:
     '''
@@ -528,14 +556,17 @@ class _Pen:
     '''
     A polygon through *points* (view coordinates), coloured as *role* says.
     '''
-    return self._item("polygon", points, role, _roleOptions(role, self.lineColor, self.fillColor, "polygon"))
+    return self._item("polygon", points, role, self._colors(role, "polygon"))
+
+  def _colors(self, role:str, typ:str) -> dict[str, Any]:
+    return _roleOptions(role, self.lineColor, self.fillColor, typ, self.backColor if role == HOLLOW else "")
 
   def oval(self, centre:Point, r:float, role:str=OPEN) -> int:
     '''
     A circle at *centre*, of radius *r*, coloured as *role* says.
     '''
     return self._item("oval", [(centre[0] - r, centre[1] - r), (centre[0] + r, centre[1] + r)], role,
-                      _roleOptions(role, self.lineColor, self.fillColor, "oval"))
+                      self._colors(role, "oval"))
 
   def line(self, points:Sequence[Point], role:str=STROKE, **opts) -> int:
     '''
@@ -559,7 +590,16 @@ class _Pen:
     self.existing = []
     return self.ids
 
-def _roleOptions(role:str, lineColor:str, fillColor:str, typ:str) -> dict[str, Any]:
+def backgroundColor(canvas) -> str:
+  '''
+  :returns: *canvas*'s background colour (what a *HOLLOW* mark is filled with) -- "" if it can't say.
+  '''
+  try:
+    return str(canvas.cget("background") or "")
+  except Exception:
+    return ""
+
+def _roleOptions(role:str, lineColor:str, fillColor:str, typ:str, backColor:str="") -> dict[str, Any]:
   '''
   The colour options of a polygon or oval of *role*.
   '''
@@ -569,11 +609,15 @@ def _roleOptions(role:str, lineColor:str, fillColor:str, typ:str) -> dict[str, A
     return dict(fill=lineColor, outline=lineColor)
   if role == OPEN:
     return dict(fill=fillColor, outline=lineColor)
+  if role == HOLLOW:
+    return dict(fill=backColor, outline=lineColor)
   return dict(fill=lineColor)
 
-def recolorMarks(canvas, ids:Sequence[int], lineColor:str, fillColor:str) -> None:
+def recolorMarks(canvas, ids:Sequence[int], lineColor:str, fillColor:str, backColor:Optional[str]=None) -> None:
   '''
   Colour items *drawMarks()* drew (or any line items) afresh, each as its role says (see *ROLES*).
+
+  :param backColor: What *HOLLOW* items are filled with (default: the canvas's background).
   '''
   for i in ids:
     try:
@@ -585,14 +629,16 @@ def recolorMarks(canvas, ids:Sequence[int], lineColor:str, fillColor:str) -> Non
     if typ == "line":
       canvas.itemconfigure(i, fill=lineColor)
     else:
-      canvas.itemconfigure(i, **_roleOptions(role, lineColor, fillColor, typ))
+      if role == HOLLOW and backColor is None:
+        backColor = backgroundColor(canvas) # (once, when it's needed)
+      canvas.itemconfigure(i, **_roleOptions(role, lineColor, fillColor, typ, backColor or ""))
 
 def _identity(coords:list[float]) -> list[float]:
   return coords
 
 def drawMarks(canvas, layout:MarkLayout, origin:Point, direction:Point, *,
               width:float=1.0, strokeWidth:Optional[float]=None,
-              lineColor:str="black", fillColor:str="", tags:Sequence[str]=(),
+              lineColor:str="black", fillColor:str="", backColor:Optional[str]=None, tags:Sequence[str]=(),
               existing:Sequence[int]=(), toWindow:Optional[Callable[[list[float]], list[float]]]=None,
               lineOptions:Optional[dict[str, Any]]=None) -> list[int]:
   '''
@@ -607,6 +653,7 @@ def drawMarks(canvas, layout:MarkLayout, origin:Point, direction:Point, *,
     (default: *width*).
   :param lineColor: The line's colour.
   :param fillColor: Circles' fill colour.
+  :param backColor: What hollow marks (rings) are filled with: the canvas's background, by default.
   :param tags: Canvas tags for every item (and each gets its role too: see *ROLES*).
   :param existing: The items an earlier call drew for these marks: reused, so a redraw doesn't make new ones.
   :param toWindow: Converts a flat list of coordinates to the canvas's (default: as they are).
@@ -614,7 +661,7 @@ def drawMarks(canvas, layout:MarkLayout, origin:Point, direction:Point, *,
   :returns: The items drawn (pass them back as *existing* next time).
   '''
   pen = _Pen(canvas, origin, direction, existing, tags, toWindow or _identity, lineColor, fillColor,
-             width if strokeWidth is None else strokeWidth)
+             width if strokeWidth is None else strokeWidth, backColor)
   opts = dict(lineOptions or {})
   for a, b in layout.joiners: # (first: under the marks)
     pen.line([pen.pt(a), pen.pt(b)], STROKE, **opts)
@@ -727,7 +774,7 @@ class MarkedPathIDs:
 def drawMarkedPath(canvas, path:Sequence[Point], startMarks:Sequence[Mark]|str|None=None,
                    endMarks:Sequence[Mark]|str|None=None, ids:Optional[MarkedPathIDs]=None, *,
                    width:float=1.0, strokeWidth:Optional[float]=None,
-                   lineColor:str="black", fillColor:str="", tags:Sequence[str]=(),
+                   lineColor:str="black", fillColor:str="", backColor:Optional[str]=None, tags:Sequence[str]=(),
                    toWindow:Optional[Callable[[list[float]], list[float]]]=None,
                    lineOptions:Optional[dict[str, Any]]=None) -> MarkedPathIDs:
   '''
@@ -765,7 +812,7 @@ def drawMarkedPath(canvas, path:Sequence[Point], startMarks:Sequence[Mark]|str|N
   elif ids.line is not None:
     canvas.delete(ids.line)
   common:dict[str, Any] = dict(width=width, strokeWidth=sw, lineColor=lineColor, fillColor=fillColor,
-                               tags=tags, toWindow=toWindow, lineOptions=lineOptions)
+                               backColor=backColor, tags=tags, toWindow=toWindow, lineOptions=lineOptions)
   ret.start = drawMarks(canvas, startLayout, path[0], pathDirection(path, False, startLayout.high),
                         existing=ids.start, **common)
   ret.end = drawMarks(canvas, endLayout, path[-1], pathDirection(path, True, -endLayout.low),

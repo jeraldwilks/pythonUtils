@@ -57,6 +57,15 @@ class TestParse(unittest.TestCase):
                      [("arrow", BACKWARD), ("bar", OUTWARD), ("arrow", FORWARD)])
     self.assertEqual([m.kind for m in parseMarks("*o")], ["dot", "circle"])
     self.assertEqual([m.kind for m in parseMarks("oo")], ["circle", "circle"])
+    self.assertEqual([(m.kind, m.direction) for m in parseMarks("@>")], [("ring", OUTWARD), ("arrow", FORWARD)])
+
+  def test_ring(self):
+    'A hollow circle: "ring", "@"; sized as a circle is.'
+    self.assertEqual(parseMarks("ring"), (Mark("ring", (5.0,), OUTWARD),))
+    self.assertEqual(parseMarks("ring(6)"), (Mark("ring", (6.0,), OUTWARD),))
+    self.assertEqual(parseMarks("@(6)"), (Mark("ring", (6.0,), OUTWARD),))
+    self.assertEqual(parseMarks("Ring"), parseMarks("@"))
+    self.assertNotEqual(parseMarks("@"), parseMarks("o"))
 
   def test_mixedAndSizes(self):
     marks = parseMarks("circle(6) arrow(8,10,3)")
@@ -109,6 +118,20 @@ class TestLayout(unittest.TestCase):
     p, = lay.marks
     self.assertEqual((p.x0, p.x1), (-2.5, 2.5))
     self.assertEqual(lay.lowStop, -2.5)
+
+  def test_ringLikeCircle(self):
+    'A ring is laid out as a circle is: centred on the end, and the line stops at its edge.'
+    for spec in ("@", "ring"):
+      with self.subTest(spec=spec):
+        lay = layoutMarks(spec, END)
+        p, = lay.marks
+        self.assertEqual((p.x0, p.x1), (-2.5, 2.5))
+        self.assertEqual(lay.lowStop, -2.5)
+        self.assertEqual(lay.breadth, 5.0)
+    lay = layoutMarks("@>", END)
+    r, a = lay.marks
+    self.assertEqual((r.x0, r.x1), (-15.0, -10.0))
+    self.assertEqual(lay.lowStop, -15.0)
 
   def test_circleThenArrow(self):
     '"o>" at the end: ----o> -- the circle behind the arrowhead, touching it.'
@@ -247,6 +270,28 @@ class TestDraw(unittest.TestCase):
     lm.recolorMarks(c, items, "grey", "")
     self.assertEqual((c.itemcget(dot, "fill"), c.itemcget(circle, "fill"), c.itemcget(circle, "outline"),
                       c.itemcget(bar, "fill")), ("grey", "", "grey", "grey"))
+
+  def test_hollow(self):
+    'A ring is filled with the canvas\'s background, outlined in the line colour -- whatever the fill colour is.'
+    c = self.canvas
+    c.configure(background="#123456")
+    lay = layoutMarks("@o*", MIDDLE)
+    ring, circle, dot = lm.drawMarks(c, lay, (100.0, 100.0), (1.0, 0.0), lineColor="blue", fillColor="blue")
+    self.assertEqual((c.itemcget(ring, "fill"), c.itemcget(ring, "outline")), ("#123456", "blue"))
+    self.assertEqual((c.itemcget(circle, "fill"), c.itemcget(dot, "fill")), ("blue", "blue"))
+    self.assertIn(lm.HOLLOW, c.gettags(ring))
+    self.assertEqual(lm.backgroundColor(c), "#123456")
+    lm.recolorMarks(c, [ring, circle, dot], "grey", "white")           # (faded: the ring stays hollow)
+    self.assertEqual((c.itemcget(ring, "fill"), c.itemcget(ring, "outline")), ("#123456", "grey"))
+    self.assertEqual(c.itemcget(circle, "fill"), "white")
+    lm.recolorMarks(c, [ring], "grey", "white", backColor="yellow")   # (or told what it's over)
+    self.assertEqual(c.itemcget(ring, "fill"), "yellow")
+    ids = lm.drawMarkedPath(c, [(0.0, 50.0), (100.0, 50.0)], "@", "@>", backColor="pink", lineColor="red")
+    self.assertEqual(c.coords(ids.line), [2.5, 50.0, 85.0, 50.0])     # (cut back to both rings)
+    for i in ids.start + ids.end:
+      if c.type(i) == "oval":
+        self.assertEqual((c.itemcget(i, "fill"), c.itemcget(i, "outline")), ("pink", "red"))
+    c.configure(background="white")
 
   def test_nothingLeft(self):
     'Marks longer than the line: no line, just the marks.'
